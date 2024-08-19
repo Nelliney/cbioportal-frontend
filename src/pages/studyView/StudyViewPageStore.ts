@@ -5796,28 +5796,29 @@ export class StudyViewPageStore
                 return Promise.resolve({});
             }
 
-            const samples = this.samples.result!;
-            const ret: { [sampleId: string]: ResourceData[] } = {};
-            const promises = [];
-            for (const sample of samples) {
-                for (const resource of sampleResourceDefinitions) {
-                    promises.push(
-                        internalClient
-                            .getAllResourceDataOfSampleInStudyUsingGET({
+            const res = _(this.samples.result!)
+                .map(sample =>
+                    sampleResourceDefinitions.map(resource =>
+                        internalClient.getAllResourceDataOfSampleInStudyUsingGET(
+                            {
                                 sampleId: sample.sampleId,
-                                studyId: sample.studyId, // TODO:
+                                studyId: sample.studyId,
                                 resourceId: resource.resourceId,
                                 projection: 'DETAILED',
-                            })
-                            .then(data => {
-                                ret[sample.sampleId] =
-                                    ret[sample.sampleId] || [];
-                                ret[sample.sampleId].push(...data);
-                            })
-                    );
-                }
-            }
-            return Promise.all(promises).then(() => ret);
+                            }
+                        )
+                    )
+                )
+                .flatten()
+                .value();
+
+            return Promise.all(res).then(resData =>
+                _(resData)
+                    .flatMap()
+                    .groupBy('sampleId')
+                    .mapValues(data => data)
+                    .value()
+            );
         },
     });
 

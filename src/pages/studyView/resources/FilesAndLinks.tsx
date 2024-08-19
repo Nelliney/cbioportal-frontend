@@ -29,30 +29,6 @@ class FilesLinksTableComponent extends LazyMobXTable<{
 
 const RECORD_LIMIT = 500;
 
-async function fetchResourceDataOfPatient(patientIds: Map<string, string>) {
-    const ret: { [key: string]: ResourceData[] } = {};
-    const promises = [];
-    for (let [patientId, studyId] of patientIds) {
-        promises.push(
-            internalClient
-                .getAllResourceDataOfPatientInStudyUsingGET({
-                    studyId: studyId,
-                    patientId: patientId,
-                    projection: 'DETAILED',
-                })
-                .then(data => {
-                    if (patientId in ret) {
-                        ret[patientId].push(...data);
-                    } else {
-                        ret[patientId] = data;
-                    }
-                })
-        );
-    }
-
-    return Promise.all(promises).then(() => ret);
-}
-
 async function fetchFilesLinksData(
     filters: StudyViewFilter,
     sampleIdResourceData: { [sampleId: string]: ResourceData[] },
@@ -61,7 +37,7 @@ async function fetchFilesLinksData(
     sortDirection: 'asc' | 'desc' | undefined,
     recordLimit: number
 ) {
-    const sampleClinicalDataResponse = await getAllClinicalDataByStudyViewFilter(
+    const studyClinicalDataResponse = await getAllClinicalDataByStudyViewFilter(
         filters,
         searchTerm,
         sortAttributeId,
@@ -69,28 +45,38 @@ async function fetchFilesLinksData(
         recordLimit,
         0
     );
+    const getResourceDataOfPatients = async () => {
+        const resourcesPerPatient = _(studyClinicalDataResponse.data)
+            .flatMap(clinicaldataItems => clinicaldataItems)
+            .uniqBy('patientId')
+            .map(resource =>
+                internalClient.getAllResourceDataOfPatientInStudyUsingGET({
+                    studyId: resource.studyId,
+                    patientId: resource.patientId,
+                    projection: 'DETAILED',
+                })
+            )
+            .flatten()
+            .value();
 
-    // get unique patient Ids from clinical data to get their resources
-    // via fetchResourceDataOfPatient.
-    const patientIds = new Map<string, string>();
-    _.forEach(sampleClinicalDataResponse.data, data => {
-        _.forEach(data, item => {
-            patientIds.set(item.patientId, item.studyId);
-        });
-    });
+        return Promise.all(resourcesPerPatient).then(resourcesPerPatient =>
+            _(resourcesPerPatient)
+                .flatMap()
+                .groupBy('patientId')
+                .value()
+        );
+    };
 
-    // get all resources for patients.
-    // improvement: use one request for getting a page of patients
-    // with their samples and resources.
-    const resourcesForPatients = await fetchResourceDataOfPatient(patientIds);
+    const resourcesForPatients = await getResourceDataOfPatients();
     const buildItemsAndResources = (resourceData: {
         [key: string]: ResourceData[];
     }) => {
         const resourcesPerPatient: { [key: string]: number } = {};
-        const items: { [attributeId: string]: string | number }[] = [];
-        _.forEach(resourceData, (data: ResourceData[]) => {
-            _.forEach(data, (resource: ResourceData) => {
-                items.push({
+        const items: { [attributeId: string]: string | number }[] = _(
+            resourceData
+        )
+            .flatMap(data =>
+                data.map(resource => ({
                     studyId: resource.studyId,
                     patientId: resource.patientId,
                     sampleId: resource.sampleId,
@@ -98,14 +84,15 @@ async function fetchFilesLinksData(
                     typeOfResource: resource?.resourceDefinition?.displayName,
                     description: resource?.resourceDefinition?.description,
                     url: resource?.url,
-                } as { [attributeId: string]: string | number });
-            });
+                }))
+            )
+            .value();
 
-            if (data && data.length > 0) {
-                if (!(data[0].patientId in resourcesPerPatient))
-                    resourcesPerPatient[data[0].patientId] = 0;
-
-                resourcesPerPatient[data[0].patientId] += data.length;
+        _(resourceData).forEach(data => {
+            const patientId = data[0]?.patientId;
+            if (patientId) {
+                resourcesPerPatient[patientId] =
+                    (resourcesPerPatient[patientId] || 0) + data.length;
             }
         });
 
@@ -183,7 +170,6 @@ export class FilesAndLinks extends React.Component<IFilesLinksTable, {}> {
                             .includes(filterStringUpper);
                     }
                 }
-
                 return false;
             },
         };
@@ -202,6 +188,7 @@ export class FilesAndLinks extends React.Component<IFilesLinksTable, {}> {
             if (this.props.store.selectedSamples.result.length === 0) {
                 return Promise.resolve({ totalItems: 0, data: [] });
             }
+
             const resources = await fetchFilesLinksData(
                 this.props.store.filters,
                 this.props.store.sampleResourceData.result!,
@@ -210,7 +197,6 @@ export class FilesAndLinks extends React.Component<IFilesLinksTable, {}> {
                 'asc',
                 RECORD_LIMIT
             );
-
             return Promise.resolve(resources);
         },
     });
